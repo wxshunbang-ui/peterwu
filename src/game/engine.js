@@ -6,8 +6,16 @@ const INITIAL_CHIPS = 2000
 const ANTE = 20
 const MIN_BET = 20
 const MAX_BET = 200
-const AI_NAMES = ['机器人A', '机器人B', '机器人C']
-const AI_PERSONALITIES = ['aggressive', 'normal', 'cautious']
+const MAX_BLIND_ROUNDS = 5 // AI最多闷牌5轮
+const ALL_AI_NAMES = ['局座', '波哥', '鞭爷', '钱色', '金爷', '猫董', '群主', '盘总']
+const AI_PERSONALITIES = ['aggressive', 'normal', 'cautious', 'aggressive', 'normal']
+
+// 随机选取3-5个AI名字
+function pickRandomAINames() {
+  const count = 3 + Math.floor(Math.random() * 3) // 3, 4, or 5
+  const shuffled = [...ALL_AI_NAMES].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, count)
+}
 
 export function createGame() {
   const state = reactive({
@@ -27,6 +35,7 @@ export function createGame() {
   })
 
   function initPlayers() {
+    const aiNames = pickRandomAINames()
     state.players = [
       {
         name: '你',
@@ -37,17 +46,19 @@ export function createGame() {
         isAI: false,
         personality: 'normal',
         currentRoundBet: 0,
+        blindRounds: 0,
         avatar: '🧑',
       },
-      ...AI_NAMES.map((name, i) => ({
+      ...aiNames.map((name, i) => ({
         name,
         chips: INITIAL_CHIPS,
         cards: [],
         folded: false,
         hasLooked: false,
         isAI: true,
-        personality: AI_PERSONALITIES[i],
+        personality: AI_PERSONALITIES[i % AI_PERSONALITIES.length],
         currentRoundBet: 0,
+        blindRounds: 0,
         avatar: '🤖',
       }))
     ]
@@ -82,12 +93,15 @@ export function createGame() {
       p.folded = false
       p.hasLooked = false
       p.currentRoundBet = 0
+      p.blindRounds = 0
     }
+
+    const numPlayers = state.players.length
 
     // 洗牌发牌
     const deck = shuffle(createDeck())
-    const hands = deal(deck, 4)
-    for (let i = 0; i < 4; i++) {
+    const hands = deal(deck, numPlayers)
+    for (let i = 0; i < numPlayers; i++) {
       state.players[i].cards = hands[i]
     }
 
@@ -99,8 +113,8 @@ export function createGame() {
     }
 
     // 轮转庄家
-    state.dealerIndex = (state.dealerIndex + 1) % 4
-    state.currentPlayerIndex = (state.dealerIndex + 1) % 4
+    state.dealerIndex = (state.dealerIndex + 1) % numPlayers
+    state.currentPlayerIndex = (state.dealerIndex + 1) % numPlayers
 
     addLog(`--- 第 ${state.gameNumber} 局开始 ---`)
     addLog(`每人底注 ${ANTE}，奖池 ${state.pot}`)
@@ -114,10 +128,11 @@ export function createGame() {
   }
 
   function nextPlayer() {
-    let next = (state.currentPlayerIndex + 1) % 4
+    const total = state.players.length
+    let next = (state.currentPlayerIndex + 1) % total
     let count = 0
-    while (state.players[next].folded && count < 4) {
-      next = (next + 1) % 4
+    while (state.players[next].folded && count < total) {
+      next = (next + 1) % total
       count++
     }
     state.currentPlayerIndex = next
@@ -202,6 +217,7 @@ export function createGame() {
         break
 
       case 'call': {
+        if (!player.hasLooked) player.blindRounds++
         const cost = state.currentBet * costMultiplier
         const actual = Math.min(cost, player.chips)
         player.chips -= actual
@@ -212,6 +228,7 @@ export function createGame() {
       }
 
       case 'raise': {
+        if (!player.hasLooked) player.blindRounds++
         const raiseAmount = Math.min(Math.max(amount, state.currentBet + MIN_BET), MAX_BET)
         state.currentBet = raiseAmount
         const cost = raiseAmount * costMultiplier
@@ -259,6 +276,13 @@ export function createGame() {
         setTimeout(() => {
           if (state.phase !== 'betting') { resolve(); return }
 
+          // AI闷牌达到上限，强制看牌
+          const forceLooked = current.isAI && !current.hasLooked && current.blindRounds >= MAX_BLIND_ROUNDS
+          if (forceLooked) {
+            executeAction(current, 'look')
+            addLog(`${current.name} 闷牌已达${MAX_BLIND_ROUNDS}轮，强制亮牌！`)
+          }
+
           const decision = aiDecide(current, {
             currentBet: state.currentBet,
             pot: state.pot,
@@ -266,7 +290,7 @@ export function createGame() {
             activePlayers: getActivePlayers().length
           })
 
-          if (decision.action === 'look') {
+          if (decision.action === 'look' && !current.hasLooked) {
             executeAction(current, 'look')
             // 看牌后还要做决策
             const decision2 = aiDecide(current, {
@@ -276,6 +300,9 @@ export function createGame() {
               activePlayers: getActivePlayers().length
             })
             executeAction(current, decision2.action, decision2.amount)
+          } else if (decision.action === 'look' && current.hasLooked) {
+            // 已看牌就跟注
+            executeAction(current, 'call')
           } else {
             executeAction(current, decision.action, decision.amount)
           }

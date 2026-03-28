@@ -10,6 +10,8 @@ const showRules = ref(false)
 const raiseAmount = ref(40)
 const animatingCards = ref(false)
 const particles = ref([])
+const musicPlaying = ref(false)
+const bgMusic = ref(null)
 
 const playerHand = computed(() => {
   const p = state.players[0]
@@ -35,10 +37,88 @@ const callCost = computed(() => {
   return state.currentBet * (p.hasLooked ? 2 : 1)
 })
 
+// 背景音乐 - 使用Web Audio API生成纸醉金迷风格的赌场音乐
+let audioCtx = null
+let musicNodes = []
+
+function createCasinoMusic() {
+  if (audioCtx) return
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+
+  function playNote(freq, startTime, duration, type = 'sine', gain = 0.08) {
+    const osc = audioCtx.createOscillator()
+    const g = audioCtx.createGain()
+    osc.type = type
+    osc.frequency.value = freq
+    g.gain.setValueAtTime(0, startTime)
+    g.gain.linearRampToValueAtTime(gain, startTime + 0.05)
+    g.gain.setValueAtTime(gain, startTime + duration - 0.1)
+    g.gain.linearRampToValueAtTime(0, startTime + duration)
+    osc.connect(g)
+    g.connect(audioCtx.destination)
+    osc.start(startTime)
+    osc.stop(startTime + duration)
+    musicNodes.push(osc)
+  }
+
+  function scheduleLoop() {
+    const now = audioCtx.currentTime
+    // 爵士风格和弦进行 - Cmaj7 → Am7 → Dm7 → G7 循环
+    const chords = [
+      [261.6, 329.6, 392.0, 493.9], // Cmaj7
+      [220.0, 261.6, 329.6, 392.0], // Am7
+      [293.7, 349.2, 440.0, 523.3], // Dm7
+      [196.0, 246.9, 293.7, 349.2], // G7
+    ]
+    const beatDur = 0.5
+    let t = now + 0.1
+
+    for (let bar = 0; bar < 4; bar++) {
+      const chord = chords[bar]
+      // 柔和pad音色
+      for (const freq of chord) {
+        playNote(freq, t, beatDur * 4, 'sine', 0.04)
+        playNote(freq * 0.5, t, beatDur * 4, 'triangle', 0.02)
+      }
+      // 低音行走 bass line
+      playNote(chord[0] * 0.5, t, beatDur, 'triangle', 0.06)
+      playNote(chord[1] * 0.5, t + beatDur, beatDur, 'triangle', 0.05)
+      playNote(chord[0] * 0.5, t + beatDur * 2, beatDur, 'triangle', 0.06)
+      playNote(chord[2] * 0.5, t + beatDur * 3, beatDur, 'triangle', 0.05)
+      t += beatDur * 4
+    }
+
+    // 循环
+    if (musicPlaying.value) {
+      setTimeout(scheduleLoop, (beatDur * 16 - 0.5) * 1000)
+    }
+  }
+
+  scheduleLoop()
+}
+
+function toggleMusic() {
+  musicPlaying.value = !musicPlaying.value
+  if (musicPlaying.value) {
+    createCasinoMusic()
+  } else {
+    if (audioCtx) {
+      audioCtx.close()
+      audioCtx = null
+      musicNodes = []
+    }
+  }
+}
+
 function startGame() {
   animatingCards.value = true
   game.startNewRound()
   setTimeout(() => { animatingCards.value = false }, 800)
+  // 首次开始游戏自动播放音乐
+  if (!musicPlaying.value && !audioCtx) {
+    musicPlaying.value = true
+    createCasinoMusic()
+  }
 }
 
 function doCall() {
@@ -95,10 +175,25 @@ function getCardDisplay(card, show) {
   return { text: `${card.suit}${card.rank}`, isRed: isRedSuit(card.suit) }
 }
 
+// 动态座位布局，根据玩家人数分配
 function getPlayerPosition(index) {
-  // 0=bottom(player), 1=left, 2=top, 3=right
-  const positions = ['bottom', 'left', 'top', 'right']
-  return positions[index]
+  const total = state.players.length
+  if (index === 0) return 'bottom' // 玩家总在下方
+
+  // AI均匀分布在上方和两侧
+  const aiCount = total - 1
+  const aiIndex = index - 1
+  if (aiCount <= 2) {
+    return ['left', 'right'][aiIndex]
+  }
+  if (aiCount === 3) {
+    return ['left', 'top', 'right'][aiIndex]
+  }
+  if (aiCount === 4) {
+    return ['left', 'top-left', 'top-right', 'right'][aiIndex]
+  }
+  // 5 AI
+  return ['left', 'top-left', 'top', 'top-right', 'right'][aiIndex]
 }
 </script>
 
@@ -128,6 +223,9 @@ function getPlayerPosition(index) {
         <span class="title-char">花</span>
       </h1>
       <div class="header-ornament right">♦♣♥♠</div>
+      <button class="music-btn" @click="toggleMusic" :title="musicPlaying ? '关闭音乐' : '开启音乐'">
+        {{ musicPlaying ? '🔊' : '🔇' }}
+      </button>
     </header>
 
     <!-- 主牌桌 -->
@@ -366,7 +464,7 @@ function getPlayerPosition(index) {
   align-items: center;
   justify-content: center;
   gap: 15px;
-  padding: 15px 20px 10px;
+  padding: 15px 50px 10px;
   width: 100%;
   max-width: 600px;
   position: relative;
@@ -513,10 +611,43 @@ function getPlayerPosition(index) {
   top: 50%;
   transform: translateY(-50%);
 }
+.seat-top-left {
+  top: 10%;
+  left: 8%;
+}
+.seat-top-right {
+  top: 10%;
+  right: 8%;
+}
 
 @media (max-width: 480px) {
   .seat-left { left: -10px; }
   .seat-right { right: -10px; }
+  .seat-top-left { left: 2%; top: 12%; }
+  .seat-top-right { right: 2%; top: 12%; }
+}
+
+/* 音乐按钮 */
+.music-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(139, 105, 20, 0.3);
+  border: 1px solid rgba(218, 165, 32, 0.4);
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.music-btn:hover {
+  background: rgba(139, 105, 20, 0.6);
+  box-shadow: 0 0 10px rgba(218, 165, 32, 0.4);
 }
 
 .player-avatar {
